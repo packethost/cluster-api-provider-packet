@@ -13,5 +13,5 @@ bases:
 - default
 images:
 - name: docker.io/packethost/cluster-api-provider-packet:e2e # images with this name
-  newTag: v0.3.9 # {"type":"string","x-kustomize":{"setter":{"name":"image-tag","value":"v0.3.9"}}}
+  newTag: v0.4.0 # {"type":"string","x-kustomize":{"setter":{"name":"image-tag","value":"v0.4.0"}}}
   newName: docker.io/packethost/cluster-api-provider-packet # and this name

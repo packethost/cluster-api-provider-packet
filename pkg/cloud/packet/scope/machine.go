@@ -137,7 +137,7 @@ func (m *MachineScope) GetProviderID() string {
 
 // SetProviderID sets the DOMachine providerID in spec from device id.
 func (m *MachineScope) SetProviderID(deviceID string) {
-	pid := fmt.Sprintf("packet://%s", deviceID)
+	pid := fmt.Sprintf("equinixmetal://%s", deviceID)
 	m.PacketMachine.Spec.ProviderID = pointer.StringPtr(pid)
 }
 
