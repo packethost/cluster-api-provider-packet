@@ -34,8 +34,8 @@ spec:
           netmask 255.255.255.255
         EOF
       - systemctl restart networking
-      - 'kubectl --kubeconfig /etc/kubernetes/admin.conf create secret generic -n kube-system packet-cloud-config --from-literal=cloud-sa.json=''{"apiKey": "{{ .apiKey }}","projectID": "${PROJECT_ID}", "eipTag": "cluster-api-provider-packet:cluster-id:${CLUSTER_NAME}"}'''
-      - kubectl apply --kubeconfig /etc/kubernetes/admin.conf -f https://github.com/packethost/packet-ccm/releases/download/v1.1.0/deployment.yaml
+      - 'kubectl --kubeconfig /etc/kubernetes/admin.conf create secret generic -n kube-system metal-cloud-config --from-literal=cloud-sa.json=''{"apiKey": "{{ .apiKey }}","projectID": "${PROJECT_ID}", "eipTag": "cluster-api-provider-packet:cluster-id:${CLUSTER_NAME}"}'''
+      - kubectl apply --kubeconfig /etc/kubernetes/admin.conf -f https://raw.githubusercontent.com/equinix/cloud-provider-equinix-metal/v3.0.1/deploy/template/deployment.yaml
     preKubeadmCommands:
       - sed -ri '/\sswap\s/s/^#?/#/' /etc/fstab
       - swapoff -a
@@ -196,3 +196,4 @@ spec:
     - name: "${CLUSTER_NAME}-crs-cni"
       kind: ConfigMap
 ---
+
