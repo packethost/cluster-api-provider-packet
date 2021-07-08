@@ -7,7 +7,7 @@ require (
 	github.com/google/uuid v1.2.0
 	github.com/onsi/ginkgo v1.16.4
 	github.com/onsi/gomega v1.14.0
-	github.com/packethost/packngo v0.13.0
+	github.com/packethost/packngo v0.16.0
 	github.com/pkg/errors v0.9.1
 	k8s.io/api v0.17.17
 	k8s.io/apimachinery v0.17.17
