@@ -21,16 +21,26 @@ import (
 )
 
 const (
-	MachineUIDTag = "cluster-api-provider-packet:machine-uid"
-	clusterIDTag  = "cluster-api-provider-packet:cluster-id"
-	AnnotationUID = "cluster.k8s.io/machine-uid"
+	MachineUIDTag  = "cluster-api-provider-packet:machine-uid"
+	machineNameTag = "cluster-api-provider-packet:machine-name"
+	clusterIDTag   = "cluster-api-provider-packet:cluster-id"
+	namespaceTag   = "cluster-api-provider-packet:namespace"
 )
 
-func GenerateMachineTag(ID string) string {
-	return fmt.Sprintf("%s:%s", MachineUIDTag, ID)
+func GenerateMachineTag(id string) string {
+	return fmt.Sprintf("%s:%s", MachineUIDTag, id)
 }
-func GenerateClusterTag(ID string) string {
-	return fmt.Sprintf("%s:%s", clusterIDTag, ID)
+
+func GenerateMachineNameTag(name string) string {
+	return fmt.Sprintf("%s:%s", machineNameTag, name)
+}
+
+func GenerateClusterTag(clusterName string) string {
+	return fmt.Sprintf("%s:%s", clusterIDTag, clusterName)
+}
+
+func GenerateNamespaceTag(namespace string) string {
+	return fmt.Sprintf("%s:%s", namespaceTag, namespace)
 }
 
 // ItemsInList checks if all items are in the list

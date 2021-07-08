@@ -23,16 +23,16 @@ import (
 	"strings"
 	"time"
 
-	corev1 "k8s.io/api/core/v1"
-
 	"github.com/go-logr/logr"
-	"github.com/google/uuid"
 	"github.com/packethost/packngo"
 	"github.com/pkg/errors"
-
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/record"
+	infrastructurev1alpha3 "sigs.k8s.io/cluster-api-provider-packet/api/v1alpha3"
+	packet "sigs.k8s.io/cluster-api-provider-packet/pkg/cloud/packet"
+	"sigs.k8s.io/cluster-api-provider-packet/pkg/cloud/packet/scope"
 	clusterv1 "sigs.k8s.io/cluster-api/api/v1alpha3"
 	capierrors "sigs.k8s.io/cluster-api/errors"
 	"sigs.k8s.io/cluster-api/util"
@@ -42,11 +42,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/controller-runtime/pkg/source"
-
-	packet "sigs.k8s.io/cluster-api-provider-packet/pkg/cloud/packet"
-	"sigs.k8s.io/cluster-api-provider-packet/pkg/cloud/packet/scope"
-
-	infrastructurev1alpha3 "sigs.k8s.io/cluster-api-provider-packet/api/v1alpha3"
 )
 
 const (
@@ -173,6 +168,7 @@ func (r *PacketMachineReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 func (r *PacketMachineReconciler) reconcile(ctx context.Context, machineScope *scope.MachineScope, clusterScope *scope.ClusterScope, logger logr.Logger) (ctrl.Result, error) {
 	logger.Info("Reconciling PacketMachine")
+
 	packetmachine := machineScope.PacketMachine
 	// If the PacketMachine is in an error state, return early.
 	if packetmachine.Status.ErrorReason != nil || packetmachine.Status.ErrorMessage != nil {
@@ -195,27 +191,53 @@ func (r *PacketMachineReconciler) reconcile(ctx context.Context, machineScope *s
 	}
 
 	providerID := machineScope.GetInstanceID()
+	defaultTags := defaultTags(machineScope.Namespace(), machineScope.Name(), clusterScope.Name())
+
 	var (
 		dev                  *packngo.Device
 		addrs                []corev1.NodeAddress
 		err                  error
 		controlPlaneEndpoint packngo.IPAddressReservation
 	)
-	// if we have no provider ID, then we are creating
+
 	if providerID != "" {
+		// If we already have a providerID, then retrieve the device using the
+		// providerID. This means that the Machine has already been created
+		// and we successfully recorded the providerID.
 		dev, err = r.PacketClient.GetDevice(providerID)
+		if err != nil {
+			var perr *packngo.ErrorResponse
+			if errors.As(err, &perr) && perr.Response != nil && perr.Response.StatusCode == http.StatusNotFound {
+				errs := fmt.Errorf("device does not exist: %s", providerID)
+
+				machineScope.SetErrorReason(capierrors.UpdateMachineError)
+				machineScope.SetErrorMessage(errs)
+				return ctrl.Result{}, errs
+			}
+
+			return ctrl.Result{}, err
+		}
+	}
+
+	if dev == nil {
+		// We don't yet have a providerID, check to see if we've already
+		// created a device by using the tags that we assign to devices
+		// on creation.
+		dev, err = r.PacketClient.GetDeviceByTags(
+			machineScope.PacketCluster.Spec.ProjectID,
+			defaultTags,
+		)
 		if err != nil {
 			return ctrl.Result{}, err
 		}
 	}
+
 	if dev == nil {
+		// We weren't able to find a device by either providerID or by tags,
+		// so we need to create a new device.
 		createDeviceReq := packet.CreateDeviceRequest{
+			ExtraTags:    defaultTags,
 			MachineScope: machineScope,
-		}
-		mUID := uuid.New().String()
-		tags := []string{
-			packet.GenerateMachineTag(mUID),
-			packet.GenerateClusterTag(clusterScope.Name()),
 		}
 
 		// when the node is a control plan we should check if the elastic ip
@@ -236,14 +258,14 @@ func (r *PacketMachineReconciler) reconcile(ctx context.Context, machineScope *s
 			createDeviceReq.ControlPlaneEndpoint = controlPlaneEndpoint.Address
 		}
 
-		createDeviceReq.ExtraTags = tags
-
 		dev, err = r.PacketClient.NewDevice(createDeviceReq)
 
 		switch {
 		// TODO: find a better way than parsing the error messages for this.
 		case err != nil && strings.Contains(err.Error(), " no available hardware reservations "):
-			// Do not treat an error indicating there are no hardware reservations available as fatal
+			// Do not treat an error indicating there are no hardware
+			// reservations available as fatal, we should continue to retry
+			// device creation until a reservation is available
 			return ctrl.Result{}, fmt.Errorf("failed to create machine %s: %w", machineScope.Name(), err)
 		case err != nil:
 			errs := fmt.Errorf("failed to create machine %s: %w", machineScope.Name(), err)
@@ -303,24 +325,41 @@ func (r *PacketMachineReconciler) reconcile(ctx context.Context, machineScope *s
 
 func (r *PacketMachineReconciler) reconcileDelete(ctx context.Context, machineScope *scope.MachineScope, clusterScope *scope.ClusterScope, logger logr.Logger) (ctrl.Result, error) {
 	logger.Info("Deleting machine")
+
 	packetmachine := machineScope.PacketMachine
 	providerID := machineScope.GetInstanceID()
+	defaultTags := defaultTags(machineScope.Namespace(), machineScope.Name(), clusterScope.Name())
+
 	if providerID == "" {
-		logger.Info("no provider ID provided, nothing to delete")
+		logger.Info("no provider ID provided, checking for device by tags")
+
+		device, err := r.PacketClient.GetDeviceByTags(machineScope.PacketCluster.Spec.ProjectID, defaultTags)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+
+		if device != nil {
+			if err := r.deleteDevice(device.ID, force); err != nil {
+				return ctrl.Result{}, fmt.Errorf("failed to delete the machine: %w", err)
+			}
+		}
+
 		controllerutil.RemoveFinalizer(packetmachine, infrastructurev1alpha3.MachineFinalizer)
 		return ctrl.Result{}, nil
 	}
 
 	device, err := r.PacketClient.GetDevice(providerID)
 	if err != nil {
-		if err.(*packngo.ErrorResponse).Response != nil && err.(*packngo.ErrorResponse).Response.StatusCode == http.StatusNotFound {
+		var perr *packngo.ErrorResponse
+		if errors.As(err, &perr) && perr.Response != nil && perr.Response.StatusCode == http.StatusNotFound {
 			// When the server does not exist we do not have anything left to do.
 			// Probably somebody manually deleted the server from the UI or via API.
 			logger.Info("Server not found, nothing left to do")
 			controllerutil.RemoveFinalizer(packetmachine, infrastructurev1alpha3.MachineFinalizer)
 			return ctrl.Result{}, nil
 		}
-		return ctrl.Result{}, fmt.Errorf("error retrieving machine status %s: %v", packetmachine.Name, err)
+
+		return ctrl.Result{}, fmt.Errorf("error retrieving machine status %s: %w", packetmachine.Name, err)
 	}
 
 	// We should never get there but this is a safetly check
@@ -329,11 +368,26 @@ func (r *PacketMachineReconciler) reconcileDelete(ctx context.Context, machineSc
 		return ctrl.Result{}, fmt.Errorf("machine does not exist: %s", packetmachine.Name)
 	}
 
-	_, err = r.PacketClient.Devices.Delete(device.ID, force)
-	if err != nil {
+	if err := r.deleteDevice(device.ID, force); err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to delete the machine: %v", err)
 	}
 
 	controllerutil.RemoveFinalizer(packetmachine, infrastructurev1alpha3.MachineFinalizer)
 	return ctrl.Result{}, nil
+}
+
+func (r *PacketMachineReconciler) deleteDevice(id string, force bool) error {
+	if _, err := r.PacketClient.Devices.Delete(id, force); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func defaultTags(namespace, name, clusterName string) []string {
+	return []string{
+		packet.GenerateClusterTag(clusterName),
+		packet.GenerateMachineNameTag(name),
+		packet.GenerateNamespaceTag(namespace),
+	}
 }
